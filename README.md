@@ -25,11 +25,11 @@ input_folder
 ```
 output_folder
 ├── Subfolder1
-│   ├── 9fd72aeb-cb5f-4bcb-8e91-6d50a1bc19d1.dcm
-│   ├── 3bcf1a3e-4b7d-4766-a645-320e92c95d48.dcm
+│   ├── image1.dcm
+│   ├── image2.dcm
 ├── Subfolder2
-│   ├── 1a73aefd-87b8-490a-85c1-d2f43456d92b.dcm
-├── 4ad1e741-134d-4e12-9a4e-8e07d61e84d7.dcm
+│   ├── image3.dcm
+├── image4.dcm
 ```
 
 ## Required imports
