@@ -6,6 +6,7 @@ from PIL import Image
 import numpy as np
 import uuid
 
+
 def convert_images_to_dicom(input_folder, output_folder):
     """
     Converts all images in the input folder (including subfolders) to DICOM format
@@ -15,37 +16,35 @@ def convert_images_to_dicom(input_folder, output_folder):
         input_folder (str): Path to the folder containing images.
         output_folder (str): Path to the folder to save DICOM files.
     """
-    # Create the output folder if it doesn't already exist
-    os.makedirs(output_folder, exist_ok=True)
+    os.makedirs(output_folder, exist_ok=True)  # Ensure output folder exists
 
-    # Supported image file extensions
-    supported_extensions = {".png", ".bmp", ".jpg", ".jpeg", ".tiff"}
+    supported_extensions = {".png", ".bmp", ".jpg", ".jpeg", ".tiff"}  # Supported formats
 
-    # Traverse through all subfolders and files in the input folder
     for root, _, files in os.walk(input_folder):
         for file_name in files:
-            # Check if the current file has a supported image format
             if any(file_name.lower().endswith(ext) for ext in supported_extensions):
                 image_path = os.path.join(root, file_name)
                 try:
-                    # Load the image using PIL
                     img = Image.open(image_path)
-                    width, height = img.size  # Get image dimensions
-                    print(f"Processing: {image_path} | Format: {img.format}, Size: {width}x{height}")
+                    width, height = img.size
+                    print(f"Processing: {image_path} | Format: {img.format}, Mode: {img.mode}, Size: {width}x{height}")
 
-                    # Convert to RGB mode if the image format requires it
-                    if img.format in ["PNG", "BMP", "TIFF"]:
+                    # Handle different image modes
+                    if img.mode == "I;16":  # 16-bit grayscale TIFF
+                        img = img.point(lambda i: i * (255 / 65535))  # Normalize to 8-bit
+                        img = img.convert("L")
+                    elif img.mode == "P":  # Indexed color
                         img = img.convert("RGB")
+                    elif img.mode in ["CMYK", "RGBA"]:  # CMYK or has alpha
+                        img = img.convert("RGB")
+                    elif img.mode == "L":  # Ensure grayscale images remain MONOCHROME2
+                        img = img.convert("L")
 
-                    # Convert image data to a NumPy array for DICOM PixelData
-                    if img.mode == "L":  # Grayscale image
-                        np_frame = np.array(img, dtype=np.uint8)
-                    elif img.mode in ["RGBA", "RGB"]:  # Color image
-                        np_frame = np.array(img.getdata(), dtype=np.uint8).reshape(height, width, -1)
-                    else:
-                        # Skip unsupported image modes
-                        print(f"Skipping {image_path}: Unsupported image mode {img.mode}")
-                        continue
+                    # Convert image to NumPy array
+                    np_frame = np.array(img)
+
+                    # Extract file name without extension
+                    output_file_name = file_name.rsplit(".", 1)[0]
 
                     # Create a new DICOM dataset
                     ds = Dataset()
@@ -56,43 +55,57 @@ def convert_images_to_dicom(input_folder, output_folder):
                     ds.file_meta.ImplementationClassUID = generate_uid()
 
                     # Populate required DICOM attributes
-                    ds.PatientName = "ConvertedImage"  # Placeholder patient name
+                    patient_name = os.path.basename(os.path.normpath(root))
+                    ds.PatientName = patient_name  # Placeholder patient name
                     ds.Rows = height
                     ds.Columns = width
-                    ds.PhotometricInterpretation = "RGB" if img.mode in ["RGBA", "RGB"] else "MONOCHROME2"
-                    ds.SamplesPerPixel = 3 if img.mode in ["RGBA", "RGB"] else 1
-                    ds.BitsStored = 8  # 8 bits per pixel
-                    ds.BitsAllocated = 8
-                    ds.HighBit = 7  # Most significant bit (0-indexed)
+
+                    # Set Photometric Interpretation
+                    if img.mode in ["RGB", "RGBA"]:
+                        ds.PhotometricInterpretation = "RGB"
+                        ds.SamplesPerPixel = 3
+                    else:
+                        ds.PhotometricInterpretation = "MONOCHROME2"
+                        ds.SamplesPerPixel = 1
+
+                    # Handle 16-bit TIFF correctly
+                    if img.mode == "I;16":
+                        ds.BitsStored = 16
+                        ds.BitsAllocated = 16
+                        ds.HighBit = 15
+                        ds.PixelData = np_frame.astype(np.uint16).tobytes()
+                    else:
+                        ds.BitsStored = 8
+                        ds.BitsAllocated = 8
+                        ds.HighBit = 7
+                        ds.PixelData = np_frame.astype(np.uint8).tobytes()
+
                     ds.PixelRepresentation = 0  # Unsigned integer
                     ds.PlanarConfiguration = 0  # Pixel data stored by pixel
                     ds.NumberOfFrames = 1  # Single frame
-                    ds.PixelData = np_frame.tobytes()  # Set the pixel data
 
-                    # Add unique identifiers for the DICOM file
+                    # Add unique identifiers
                     ds.SOPClassUID = generate_uid()
                     ds.SOPInstanceUID = generate_uid()
                     ds.StudyInstanceUID = generate_uid()
                     ds.SeriesInstanceUID = generate_uid()
 
-                    # Generate a relative output path to maintain folder structure
+                    # Maintain folder structure in output
                     relative_path = os.path.relpath(root, input_folder)
                     output_subfolder = os.path.join(output_folder, relative_path)
                     os.makedirs(output_subfolder, exist_ok=True)
 
-                    # Save the DICOM file with a unique name
-                    dicom_filename = os.path.join(output_subfolder, str(uuid.uuid4()) + ".dcm")
+                    # Save the DICOM file
+                    dicom_filename = os.path.join(output_subfolder, f"{output_file_name}.dcm")
                     ds.save_as(dicom_filename, write_like_original=False)
                     print(f"Saved DICOM: {dicom_filename}")
 
                 except Exception as e:
-                    # Catch and log any errors that occur during the conversion process
                     print(f"Error processing {image_path}: {e}")
 
-if __name__ == "__main__":
-    # Define input and output folder paths (update paths as needed)
-    input_folder = r"C:\Temp\Images"  # Path to folder containing images
-    output_folder = r"C:\Temp\DICOM"  # Path to folder for saving DICOM files
 
-    # Convert all images in the input folder to DICOM format
+if __name__ == "__main__":
+    input_folder = r"C:\\Temp\\Images"  # Path to folder containing images
+    output_folder = r"C:\\Temp\\DICOM"  # Path to folder for saving DICOM files
+
     convert_images_to_dicom(input_folder, output_folder)
