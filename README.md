@@ -3,8 +3,8 @@ Converts all images in the input folder (including subfolders) to DICOM format a
 
 > [!NOTE]  
 > The user **must** define `input_folder` and `output_folder` in line 94 and 95 before running the script.
-> If the series is a computer tomography the original filenames of the files must be in numeric order for the scrolling to work. slice_001.jpg, slice_002.jpg for example.
-> The parent folder of the images is acknowledged as a series
+> If the series is a computer tomography the original filenames of the files **must** be in numeric order for the scrolling to work. `slice_001.jpg`, `slice_002.jpg` for example.
+> The parent folder of the images is acknowledged as a series.
 
 > ## Args
 >
