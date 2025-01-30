@@ -4,24 +4,29 @@ from pydicom.dataset import Dataset
 from pydicom.uid import generate_uid
 from PIL import Image
 import numpy as np
-import uuid
-
+import re  # For sorting filenames numerically
 
 def convert_images_to_dicom(input_folder, output_folder):
-    """
-    Converts all images in the input folder (including subfolders) to DICOM format
-    and saves them in the output folder.
+    os.makedirs(output_folder, exist_ok=True)
+    supported_extensions = {".png", ".bmp", ".jpg", ".jpeg", ".tiff"}
 
-    Args:
-        input_folder (str): Path to the folder containing images.
-        output_folder (str): Path to the folder to save DICOM files.
-    """
-    os.makedirs(output_folder, exist_ok=True)  # Ensure output folder exists
-
-    supported_extensions = {".png", ".bmp", ".jpg", ".jpeg", ".tiff"}  # Supported formats
+    series_uid_map = {}  # Store SeriesInstanceUID per folder
+    study_uid = generate_uid()  # Keep the Study UID the same for all slices
 
     for root, _, files in os.walk(input_folder):
-        for file_name in files:
+        # Sort files numerically if filenames contain numbers (e.g., slice_1.tiff, slice_2.tiff)
+        files = sorted(files, key=lambda x: int(re.search(r"\d+", x).group()) if re.search(r"\d+", x) else x)
+
+        patient_name = os.path.basename(os.path.normpath(root))
+
+        # Assign a SeriesInstanceUID for the folder
+        if patient_name not in series_uid_map:
+            series_uid_map[patient_name] = generate_uid()
+
+        series_uid = series_uid_map[patient_name]
+
+        # Iterate through files and assign InstanceNumber & SliceLocation
+        for instance_number, file_name in enumerate(files, start=1):
             if any(file_name.lower().endswith(ext) for ext in supported_extensions):
                 image_path = os.path.join(root, file_name)
                 try:
@@ -30,35 +35,41 @@ def convert_images_to_dicom(input_folder, output_folder):
                     print(f"Processing: {image_path} | Format: {img.format}, Mode: {img.mode}, Size: {width}x{height}")
 
                     # Handle different image modes
-                    if img.mode == "I;16":  # 16-bit grayscale TIFF
-                        img = img.point(lambda i: i * (255 / 65535))  # Normalize to 8-bit
+                    if img.mode == "I;16":
+                        img = img.point(lambda i: i * (255 / 65535))
                         img = img.convert("L")
-                    elif img.mode == "P":  # Indexed color
+                    elif img.mode == "P":
                         img = img.convert("RGB")
-                    elif img.mode in ["CMYK", "RGBA"]:  # CMYK or has alpha
+                    elif img.mode in ["CMYK", "RGBA"]:
                         img = img.convert("RGB")
-                    elif img.mode == "L":  # Ensure grayscale images remain MONOCHROME2
+                    elif img.mode == "L":
                         img = img.convert("L")
 
-                    # Convert image to NumPy array
                     np_frame = np.array(img)
-
-                    # Extract file name without extension
                     output_file_name = file_name.rsplit(".", 1)[0]
 
-                    # Create a new DICOM dataset
+                    # Create DICOM dataset
                     ds = Dataset()
                     ds.file_meta = Dataset()
                     ds.file_meta.TransferSyntaxUID = pydicom.uid.ExplicitVRLittleEndian
-                    ds.file_meta.MediaStorageSOPClassUID = "1.2.840.10008.5.1.4.1.1.1.1"  # Secondary capture image storage
+                    ds.file_meta.MediaStorageSOPClassUID = "1.2.840.10008.5.1.4.1.1.2"  # CT Image Storage
                     ds.file_meta.MediaStorageSOPInstanceUID = generate_uid()
                     ds.file_meta.ImplementationClassUID = generate_uid()
 
-                    # Populate required DICOM attributes
-                    patient_name = os.path.basename(os.path.normpath(root))
-                    ds.PatientName = patient_name  # Placeholder patient name
+                    # Assign Patient & Study details
+                    ds.PatientName = patient_name
                     ds.Rows = height
                     ds.Columns = width
+                    ds.StudyInstanceUID = study_uid
+                    ds.SeriesInstanceUID = series_uid
+                    ds.SOPInstanceUID = generate_uid()
+
+                    # Set slice order properties
+                    ds.InstanceNumber = instance_number  # Ensures correct scrolling order
+                    ds.SliceLocation = float(instance_number)  # Helps viewers order slices spatially
+
+                    # Optional: Image Position (important for 3D reconstruction in some viewers)
+                    ds.ImagePositionPatient = [0, 0, instance_number * 1.5]  # Arbitrary slice spacing
 
                     # Set Photometric Interpretation
                     if img.mode in ["RGB", "RGBA"]:
@@ -68,7 +79,6 @@ def convert_images_to_dicom(input_folder, output_folder):
                         ds.PhotometricInterpretation = "MONOCHROME2"
                         ds.SamplesPerPixel = 1
 
-                    # Handle 16-bit TIFF correctly
                     if img.mode == "I;16":
                         ds.BitsStored = 16
                         ds.BitsAllocated = 16
@@ -80,32 +90,23 @@ def convert_images_to_dicom(input_folder, output_folder):
                         ds.HighBit = 7
                         ds.PixelData = np_frame.astype(np.uint8).tobytes()
 
-                    ds.PixelRepresentation = 0  # Unsigned integer
-                    ds.PlanarConfiguration = 0  # Pixel data stored by pixel
-                    ds.NumberOfFrames = 1  # Single frame
-
-                    # Add unique identifiers
-                    ds.SOPClassUID = generate_uid()
-                    ds.SOPInstanceUID = generate_uid()
-                    ds.StudyInstanceUID = generate_uid()
-                    ds.SeriesInstanceUID = generate_uid()
+                    ds.PixelRepresentation = 0
+                    ds.PlanarConfiguration = 0
+                    ds.NumberOfFrames = 1
 
                     # Maintain folder structure in output
                     relative_path = os.path.relpath(root, input_folder)
                     output_subfolder = os.path.join(output_folder, relative_path)
                     os.makedirs(output_subfolder, exist_ok=True)
 
-                    # Save the DICOM file
                     dicom_filename = os.path.join(output_subfolder, f"{output_file_name}.dcm")
                     ds.save_as(dicom_filename, write_like_original=False)
-                    print(f"Saved DICOM: {dicom_filename}")
+                    print(f"Saved DICOM: {dicom_filename} (InstanceNumber: {instance_number})")
 
                 except Exception as e:
                     print(f"Error processing {image_path}: {e}")
 
-
 if __name__ == "__main__":
-    input_folder = r"C:\\Temp\\Images"  # Path to folder containing images
-    output_folder = r"C:\\Temp\\DICOM"  # Path to folder for saving DICOM files
-
+    input_folder = r"C:\Temp\Images"
+    output_folder = r"C:\Temp\DICOM"
     convert_images_to_dicom(input_folder, output_folder)
